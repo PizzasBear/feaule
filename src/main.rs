@@ -1,5 +1,5 @@
 use std::{
-    fmt, io, iter, ops,
+    fmt, io, ops,
     path::{Path, PathBuf},
     str,
 };
@@ -742,7 +742,10 @@ pub enum TokenValue {
     FStr(String, Vec<(usize, Token)>),
     Char(char),
     Label(String),
-    Ident(String),
+    Ident {
+        raw: bool,
+        ident: String,
+    },
     Punct(Punct),
     Newline(Newline),
     InnerDoc(String),
@@ -773,7 +776,9 @@ impl fmt::Debug for TokenValue {
             Self::FStr(s, tokens) => f.debug_tuple("FStr").field(s).field(tokens).finish(),
             Self::Char(ch) => write!(f, "Char({ch:?})"),
             Self::Label(s) => write!(f, "Label({s:?})"),
-            Self::Ident(s) => write!(f, "Ident({s:?})"),
+            &Self::Ident { raw, ref ident } => {
+                write!(f, "Ident(\"{}{ident}\")", if raw { "r'" } else { "" })
+            }
             Self::Punct(punct) => fmt::Debug::fmt(punct, f),
             Self::Newline(Newline) => write!(f, "Newline"),
             Self::InnerDoc(s) => write!(f, "InnerDoc({s:?})"),
@@ -1999,6 +2004,8 @@ pub fn lex_group(
                     ^(?P<num>\d)
                       | (?P<group>[\(\[\{{\}}\]\)])
                       | (?P<str>(?:[\w&&\D]\w*)?")
+                      | (?P<char_w>'[\w&&\D]')
+                      | (?P<label>'[\w&&\D]\w*)
                       | (?P<char>')
                       | (?P<ident>(?:r')?[\w&&\D]\w*)
                       | (?P<punct>[{puncts}]+)
@@ -2054,11 +2061,22 @@ pub fn lex_group(
             }
         } else if ty.name("str").is_some() {
             pos = lex_str(code, pos, tokens, errors);
-        } else if ty.name("char").is_some() {
+        } else if ty.name("char").is_some() || ty.name("char_w").is_some() {
             pos = lex_char(code, pos, tokens, errors);
-        } else if let Some(mch) = ty.name("ident") {
+        } else if let Some(mch) = ty.name("label") {
             tokens.push(Token {
-                value: TokenValue::Ident(mch.as_str().to_owned()),
+                value: TokenValue::Label(mch.as_str().trim_start_matches('\'').to_owned()),
+                span: pos.with_len(mch.len()),
+            });
+
+            pos.advance_by(mch.len());
+        } else if let Some(mch) = ty.name("ident") {
+            let s = mch.as_str();
+            tokens.push(Token {
+                value: TokenValue::Ident {
+                    raw: s.starts_with("r'"),
+                    ident: s.trim_start_matches("r'").to_owned(),
+                },
                 span: pos.with_len(mch.len()),
             });
 
@@ -2147,6 +2165,3 @@ fn main() -> io::Result<()> {
 
     Ok(())
 }
-
-// fn f() {
-//     println!("Does something!");
