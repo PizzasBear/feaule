@@ -18,3 +18,4 @@ smallvec = { version = "1.10", features = [
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["tracing-log"] }
 crossterm = "0.27"
+thiserror = "1.0"

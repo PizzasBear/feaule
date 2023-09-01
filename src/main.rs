@@ -202,13 +202,13 @@ impl Span {
         }
 
         if self.buf == other.buf {
-            None
-        } else {
             Some(Self {
                 start: min(self.start, other.start),
                 end: max(self.end, other.end),
                 buf: self.buf,
             })
+        } else {
+            None
         }
     }
 
@@ -232,13 +232,13 @@ impl Span {
         }
 
         if self.buf == pos.buf {
-            None
-        } else {
             Some(Self {
                 start: min(self.start, pos.idx),
                 end: max(self.end, pos.idx),
                 buf: self.buf,
             })
+        } else {
+            None
         }
     }
 
@@ -276,7 +276,8 @@ impl Span {
             buf.path.display()
         )?;
 
-        let line_width = last_line.ilog10() as usize + 1;
+        // let line_width = last_line.ilog10() as usize + 1;
+        let line_width = buf.code_lines.len().ilog10() as usize + 1;
 
         if (buf.code_lines)
             .get(first_line + 1)
@@ -330,12 +331,14 @@ impl Span {
                 SetForegroundColor(LINE_COLOR),
                 Print(format_args!("{first_line: >line_width$} | ")),
                 ResetColor,
-                Print(&buf.code[first_line_start..last_line_end]),
+                Print(&buf.code[first_line_start..last_line_end].trim_end()),
+                SetForegroundColor(SPANNED_COLOR),
                 Print(format_args!(
                     "\n{: >1$}\\\n",
                     '/',
                     line_width + 3 + self.start_idx() - first_line_start,
                 )),
+                ResetColor,
             )?;
         } else if first_line == last_line {
             crossterm::queue!(
@@ -806,126 +809,95 @@ impl fmt::Debug for Token {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LexError {
     // Comments
-    UnexpectedInnerDoc {
-        span: Span,
-    },
-    UnexpectedOuterDoc {
-        span: Span,
-    },
-    UnclosedBlockComment {
-        span: Span,
-        open_span: Span,
-    },
+    #[error("Unexpected inner doc at {span:?}")]
+    UnexpectedInnerDoc { span: Span },
+    #[error("Unexpected outer doc at {span:?}")]
+    UnexpectedOuterDoc { span: Span },
+    #[error("Unclosed block comment over {span:?}")]
+    UnclosedBlockComment { span: Span, open_span: Span },
 
     // Numbers
-    MisplacedUnderscoreInDigits {
-        span: Span,
-    },
-    InvalidDigitForBase {
-        span: Span,
-        base: u8,
-    },
-    NonAsciiDigit {
-        span: Span,
-    },
-    ExpectedDigits {
-        span: Span,
-        base: u8,
-    },
-    InvalidFloatBase {
-        span: Span,
-        base: u8,
-    },
-    InvalidFloatSuffix {
-        span: Span,
-    },
-    InvalidNumberSuffix {
-        span: Span,
-    },
-    UnmarkedNumberSuffix {
-        span: Span,
-    },
-    DecimalFloatHasHexPower {
-        span: Span,
-    },
-    AccidentalZeroFloat {
-        span: Span,
-    },
-    OverflowingLiteral {
-        span: Span,
-    },
+    #[error("Misplaced underscore in digits at {span:?}")]
+    MisplacedUnderscoreInDigits { span: Span },
+    #[error("Invalid base {base} at {span:?}")]
+    InvalidDigitForBase { span: Span, base: u8 },
+    #[error("Found a unicode digit at {span:?}, which isn't supported")]
+    NonAsciiDigit { span: Span },
+    #[error("Expected digits in base {base} at {span:?}")]
+    ExpectedDigits { span: Span, base: u8 },
+    #[error("Invalid base {base} for a floating point number used at {span:?}")]
+    InvalidFloatBase { span: Span, base: u8 },
+    #[error("Invalid suffix for a floating point number at {span:?}")]
+    InvalidFloatSuffix { span: Span },
+    #[error("Invalid suffix for a number at {span:?}")]
+    InvalidNumberSuffix { span: Span },
+    #[error(
+        "Unmarked number suffix at {span:?} \
+         (HINT: there should be an apostrophe (') between the number and the suffix, e.g. `300'f32`)"
+    )]
+    UnmarkedNumberSuffix { span: Span },
+    #[error("Decimal float has hex power at {span:?} (HINT: try replacing `p` with `e`)")]
+    DecimalFloatHasHexPower { span: Span },
+    #[error("Floating point is so small that its parsed as zero at {span:?}")]
+    AccidentalZeroFloat { span: Span },
+    #[error("Numeric literal at {span:?} overflows its type")]
+    OverflowingNumberLiteral { span: Span },
 
     // Group
-    IllegalCharacter {
-        span: Span,
-        ch: char,
-    },
+    #[error("Illegal character {ch:?} at {span:?}")]
+    IllegalCharacter { span: Span, ch: char },
+    #[error("Mismatched delimeters {open_delim:?} at {open_span:?} and {close_delim:?} at {close_span:?}")]
     MismatchedDelimeters {
         open_delim: Delim,
         close_delim: Delim,
         open_span: Span,
         close_span: Span,
     },
+    #[error("Unclosed group deliminated by {delim:?} over {span:?}")]
     UnclosedDelimeter {
         delim: Delim,
         open_span: Span,
-        close_span: Span,
+        span: Span,
     },
 
     // String
-    UnknownStrFlag {
-        span: Span,
-        flag: char,
-    },
+    #[error("Unknown string flag {flag:?} at {span:?}")]
+    UnknownStrFlag { span: Span, flag: char },
+    #[error("Duplicate string flag {flag:?} at {span1:?} and {span2:?}")]
     DuplicateStrFlag {
         span1: Span,
         span2: Span,
         flag: char,
     },
-    UnclosedStr {
-        span: Span,
-    },
+    #[error("Unclosed string at {span:?}")]
+    UnclosedStr { span: Span },
 
     // Char Literal
-    EmptyCharLiteral {
-        span: Span,
-    },
-    UnclosedCharLiteral {
-        span: Span,
-    },
+    #[error("Empty char literal at {span:?}")]
+    EmptyCharLiteral { span: Span },
+    #[error("Unclosed char literal at {span:?}")]
+    UnclosedCharLiteral { span: Span },
 
     // Char
-    OutOfRangeAsciiEscape {
-        span: Span,
-    },
-    UnknownCharEscape {
-        span: Span,
-        escape: char,
-    },
-    AsciiCharEscapeTooShort {
-        span: Span,
-    },
-    IncorrectUnicodeEscapeSequence {
-        span: Span,
-        ch: char,
-    },
-    InvalidCharacterInUnicodeEscape {
-        span: Span,
-        ch: char,
-    },
-    UnterminatedUnicodeEscape {
-        span: Span,
-    },
-    OverlongUnicodeEscape {
-        span: Span,
-    },
-    InvalidUnicodeCharacterEscape {
-        span: Span,
-        escape_val: u32,
-    },
+    #[error(r"Out of range ascii escape, it must be in the range '\x00' - '\x7f'")]
+    OutOfRangeAsciiEscape { span: Span },
+    #[error("Unknown character escape {escape:?} at {span:?}")]
+    UnknownCharEscape { span: Span, escape: char },
+    #[error(r"Ascii escape is too short at {span:?} (it should look like '\x61')")]
+    AsciiCharEscapeTooShort { span: Span },
+    #[error("Incorrect unicode escape sequence at {span:?}")]
+    IncorrectUnicodeEscapeSequence { span: Span },
+    #[error("Invalid character {ch:?} in unicode escape at {span:?}")]
+    InvalidCharacterInUnicodeEscape { span: Span, ch: char },
+    #[error("Unterminated unicode escape at {span:?}")]
+    UnterminatedUnicodeEscape { span: Span },
+    #[error("Overly long unicode escape at {span:?}, must have at most 6 digits")]
+    OverlongUnicodeEscape { span: Span },
+    #[error("Invalid unicode character escape at {span:?}")]
+    InvalidUnicodeCharacterEscape { span: Span, escape_val: u32 },
 }
 
 impl LexError {
@@ -935,7 +907,7 @@ impl LexError {
             // Comments
             Self::UnexpectedInnerDoc { span } => smallvec![span],
             Self::UnexpectedOuterDoc { span } => smallvec![span],
-            Self::UnclosedBlockComment { span, open_span } => smallvec![span, open_span],
+            Self::UnclosedBlockComment { span, .. } => smallvec![span],
 
             // Numbers
             Self::MisplacedUnderscoreInDigits { span } => smallvec![span],
@@ -948,7 +920,7 @@ impl LexError {
             Self::UnmarkedNumberSuffix { span } => smallvec![span],
             Self::DecimalFloatHasHexPower { span } => smallvec![span],
             Self::AccidentalZeroFloat { span } => smallvec![span],
-            Self::OverflowingLiteral { span } => smallvec![span],
+            Self::OverflowingNumberLiteral { span } => smallvec![span],
 
             // Group
             Self::IllegalCharacter { span, .. } => smallvec![span],
@@ -957,11 +929,7 @@ impl LexError {
                 close_span,
                 ..
             } => smallvec![open_span, close_span],
-            Self::UnclosedDelimeter {
-                open_span,
-                close_span,
-                ..
-            } => smallvec![open_span, close_span],
+            Self::UnclosedDelimeter { span, .. } => smallvec![span],
 
             // String
             Self::UnknownStrFlag { span, .. } => smallvec![span],
@@ -1352,7 +1320,7 @@ pub fn lex_number(
                 }
                 ('e', 16) => unreachable!(),
                 (_, _) => {
-                    // TODO: Bad float base
+                    // ignore
                 }
             }
 
@@ -1381,10 +1349,12 @@ pub fn lex_number(
         static ref SUFFIX: Regex = Regex::new(r"^(')?(\w+)").unwrap();
     }
 
-    let suffix = SUFFIX.captures(&code[pos.idx()..]).map(|c| {
-        let suffix = c.get(2).unwrap().as_str();
+    let suffix = SUFFIX.captures(&code[pos.idx()..]).map(|captures| {
+        is_pure = false;
 
-        if c.get(1).is_some() {
+        let suffix = captures.get(2).unwrap().as_str();
+
+        if captures.get(1).is_some() {
             pos.advance_by(1);
         }
         let suffix_start = pos;
@@ -1392,33 +1362,31 @@ pub fn lex_number(
 
         let suffix_span = suffix_start.to(pos).unwrap();
 
-        if c.get(1).is_none() {
+        if captures.get(1).is_none() {
             errors.push(LexError::UnmarkedNumberSuffix { span: suffix_span })
         }
 
-        (
-            match suffix {
-                "uptr" => NumberSuffix::Int(IntType::UPtr),
-                "u128" => NumberSuffix::Int(IntType::U128),
-                "u64" => NumberSuffix::Int(IntType::U64),
-                "u32" => NumberSuffix::Int(IntType::U32),
-                "u16" => NumberSuffix::Int(IntType::U16),
-                "u8" => NumberSuffix::Int(IntType::U8),
+        let num_suffix = match suffix {
+            "uptr" => NumberSuffix::Int(IntType::UPtr),
+            "u128" => NumberSuffix::Int(IntType::U128),
+            "u64" => NumberSuffix::Int(IntType::U64),
+            "u32" => NumberSuffix::Int(IntType::U32),
+            "u16" => NumberSuffix::Int(IntType::U16),
+            "u8" => NumberSuffix::Int(IntType::U8),
 
-                "iptr" => NumberSuffix::Int(IntType::IPtr),
-                "i128" => NumberSuffix::Int(IntType::I128),
-                "i64" => NumberSuffix::Int(IntType::I64),
-                "i32" => NumberSuffix::Int(IntType::I32),
-                "i16" => NumberSuffix::Int(IntType::I16),
-                "i8" => NumberSuffix::Int(IntType::I8),
+            "iptr" => NumberSuffix::Int(IntType::IPtr),
+            "i128" => NumberSuffix::Int(IntType::I128),
+            "i64" => NumberSuffix::Int(IntType::I64),
+            "i32" => NumberSuffix::Int(IntType::I32),
+            "i16" => NumberSuffix::Int(IntType::I16),
+            "i8" => NumberSuffix::Int(IntType::I8),
 
-                "f64" => NumberSuffix::Float(FloatType::F64),
-                "f32" => NumberSuffix::Float(FloatType::F32),
+            "f64" => NumberSuffix::Float(FloatType::F64),
+            "f32" => NumberSuffix::Float(FloatType::F32),
 
-                _ => NumberSuffix::Unknown,
-            },
-            suffix_span,
-        )
+            _ => NumberSuffix::Unknown,
+        };
+        (num_suffix, suffix_span)
     });
 
     if frac_digits.is_some()
@@ -1439,14 +1407,14 @@ pub fn lex_number(
         match base {
             10 => {
                 let mut bytes = SmallVec::<[u8; 128]>::new();
-                bytes.extend(whole_digits.iter().map(|&d| b'0' + d));
+                bytes.extend(whole_digits.iter().map(|&d| b'0' | d));
                 bytes.push(b'.');
-                bytes.extend(frac_digits.iter().map(|&d| b'0' + d));
+                bytes.extend(frac_digits.iter().map(|&d| b'0' | d));
                 bytes.push(b'e');
                 if is_power_neg {
                     bytes.push(b'-');
                 }
-                bytes.extend(power_digits.iter().map(|&d| b'0' + d));
+                bytes.extend(power_digits.iter().map(|&d| b'0' | d));
 
                 let value = unsafe { str::from_utf8_unchecked(&bytes) }
                     .parse::<f64>()
@@ -1510,7 +1478,7 @@ pub fn lex_number(
                             0.0
                         }
                         (num::bigint::Sign::Plus, _) => {
-                            errors.push(LexError::OverflowingLiteral {
+                            errors.push(LexError::OverflowingNumberLiteral {
                                 span: start_pos.to(pos).unwrap(),
                             });
                             f64::INFINITY
@@ -1632,7 +1600,6 @@ pub fn parse_char_escape(
                     if !code[pos.idx()..].starts_with('{') {
                         errors.push(LexError::IncorrectUnicodeEscapeSequence {
                             span: start_pos.to(pos).unwrap(),
-                            ch: '{',
                         });
                         return (pos, Some('\0'));
                     }
@@ -2111,8 +2078,7 @@ pub fn lex_group(
         errors.push(LexError::UnclosedDelimeter {
             delim: opening_delim,
             open_span: opening_delim_span,
-
-            close_span: pos.with_len(0),
+            span: opening_delim_span.merged_with_pos(&pos).unwrap(),
         });
     }
 
@@ -2155,7 +2121,7 @@ fn main() -> io::Result<()> {
     if !errors.is_empty() {
         eprintln!("Errors:");
         for error in errors {
-            eprintln!("{error:?}");
+            eprintln!("{error}");
             for span in error.spans() {
                 span.show(&bufs, io::stderr().lock())?;
             }
