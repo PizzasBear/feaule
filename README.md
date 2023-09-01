@@ -49,7 +49,7 @@ There are 12 different token types:
 - A char is pretty much like rust.
 - A string is complex and annoying to describe.
 - A label is like it is in rust
-- A punctuation is any one of these `+-*/%,!&|^~$@<>=.,:;?'`\`.
+- A punctuation is any one of these ``+-*/%,!&|^~$@<>=.,:;?'`\``.
   After the last punctuation in a sequence, `Punct::END` will be inserted.
 
 <!--
