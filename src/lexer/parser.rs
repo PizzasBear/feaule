@@ -22,7 +22,7 @@ pub const BLOCK_COMMENT_END: &str = "#>";
 
 pub const WHITESPACE_CHARS: &str = " \t\r";
 // pub const SPECIAL_CHARS: &str = r"#()[]{}\";
-pub const PUNCT_CHARS: &str = r"+-*/%,!&|^~$@<>=.,:;?'`\";
+pub const PUNCT_CHARS: &str = Punct::CHARS;
 
 fn unindent(out: &mut String, s: &str) {
     let lines: SmallVec<[_; 32]> = s
@@ -588,13 +588,20 @@ pub fn lex_number(
             None => IntType::Auto,
         };
 
+        let span = start_pos.to(pos).unwrap();
         tokens.push(Token {
             value: TokenValue::Int {
-                value: BigUint::from_radix_be(&whole_digits, base).unwrap(),
+                value: whole_digits
+                    .iter()
+                    .try_fold(0u128, |v, &d| v.checked_mul(base as _)?.checked_add(d as _))
+                    .unwrap_or_else(|| {
+                        errors.push(Error::OverflowingNumberLiteral { span });
+                        0
+                    }),
                 is_pure,
                 ty,
             },
-            span: start_pos.to(pos).unwrap(),
+            span,
         });
     }
 
@@ -1060,14 +1067,14 @@ pub fn lex_group(
         } else if let Some(mch) = ty.name("punct") {
             for &ch in mch.as_str().as_bytes() {
                 tokens.push(Token {
-                    value: TokenValue::Punct(Punct::new(ch)),
+                    value: TokenValue::Punct(Punct::from_ascii(ch).unwrap()),
                     span: pos.with_len(1),
                 });
 
                 pos.advance_by(1);
             }
             tokens.push(Token {
-                value: TokenValue::Punct(Punct::end()),
+                value: TokenValue::Punct(Punct::End),
                 span: pos.with_len(0),
             });
         } else if let Some(mch) = ty.name("any") {

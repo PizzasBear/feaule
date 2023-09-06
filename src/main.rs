@@ -1,5 +1,6 @@
 pub mod code;
 pub mod lexer;
+pub mod parser;
 
 use std::{io, path::Path};
 

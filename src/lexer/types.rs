@@ -1,47 +1,77 @@
-use core::fmt;
-
-use num::BigUint;
+use std::{fmt, num::NonZeroU8, str};
 
 use crate::code::Span;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Punct(u8);
+macro_rules! def_punct {
+    ($($name:ident $lit:literal),+ $(,)?) => {
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[non_exhaustive]
+        #[repr(u8)]
+        pub enum Punct {
+            End = 0,
+            $(
+                $name = $lit,
+            )+
+        }
+
+        impl Punct {
+            pub const CHARS: &str =
+                match ::std::str::from_utf8(&[$($lit),+]) {
+                    Ok(s) => {
+                        let mut i = 0;
+                        while i < s.len() {
+                            assert!(s.as_bytes()[i].is_ascii(), "Failed to convert into ascii string");
+                            i += 1;
+                        }
+                        s
+                    }
+                    Err(_) => panic!("Failed to convert into utf8 string")
+                };
+
+            pub const fn from_ascii(ch: u8) -> Option<Self> {
+                match ch {
+                    $($lit => Some(Self::$name),)+
+                    _ => None
+                }
+            }
+        }
+    };
+}
+
+def_punct!(
+    Plus b'+', Minus b'-', Ast b'*', Sol b'/', Percnt b'%', Excl b'!', Amp b'&',
+    Verbar b'|', Circ b'^', Tilde b'~', Dollar b'$', Commat b'@', Lt b'<', Gt b'>',
+    Equals b'=', Period b'.', Comma b',', Colon b':', Semi b';', Quest b'?',
+    Grave b'`', Bsol b'\\',
+);
 
 impl fmt::Debug for Punct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_end() {
-            write!(f, "Punct::END")
+            write!(f, "Punct::End")
         } else {
-            write!(f, "Punct({:?})", char::from_u32(self.0 as _).unwrap())
+            write!(f, "Punct({:?})", char::from_u32(*self as _).unwrap())
         }
     }
 }
 
 impl Punct {
-    pub const END: Self = Self::end();
-
     #[inline]
-    pub const fn new(ch: u8) -> Self {
-        Self(ch)
+    pub const fn is_end(self) -> bool {
+        matches!(self, Self::End)
     }
 
     #[inline]
-    pub const fn end() -> Self {
-        Self(0)
-    }
-
-    #[inline]
-    pub const fn is_end(&self) -> bool {
-        self.0 == 0
-    }
-
-    #[inline]
-    pub const fn get(&self) -> Option<u8> {
-        if self.is_end() {
-            None
-        } else {
-            Some(self.0)
+    pub const fn get_char(self) -> Option<char> {
+        match self.get() {
+            Some(ch) => char::from_u32(ch.get() as _),
+            None => None,
         }
+    }
+
+    #[inline]
+    pub const fn get(self) -> Option<NonZeroU8> {
+        NonZeroU8::new(self as _)
     }
 }
 
@@ -98,7 +128,7 @@ impl fmt::Debug for Delim {
 pub enum TokenValue {
     Float(f64, FloatType),
     Int {
-        value: BigUint,
+        value: u128,
         is_pure: bool,
         ty: IntType,
     },
