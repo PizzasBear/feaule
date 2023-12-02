@@ -2,7 +2,7 @@ pub mod code;
 pub mod lexer;
 pub mod parser;
 
-use std::{io, path::Path};
+use std::{collections::HashSet, io, path::Path};
 
 pub use lexer::lex;
 
@@ -18,7 +18,7 @@ fn main() -> io::Result<()> {
     let mut bufs = CodeBufs::new();
     bufs.add_file(file.to_path_buf(), std::fs::read_to_string(file)?);
 
-    let (tokens, errors) = lex(0, bufs.buf(0).code());
+    let (tokens, errors) = lex(0, bufs.buf(0).code(), &mut HashSet::new());
     // `a {hello} big` => ("My name is", "max", "and")
     println!("tokens = {tokens:#?}");
     println!();

@@ -68,6 +68,11 @@ impl Pos {
         Self::new(buf, 0)
     }
 
+    pub fn count_col(&self, code: &str) -> usize {
+        let start = code[..self.idx()].rfind('\n').map_or(0, |i| i + 1);
+        code[start..self.idx()].chars().count() + 1
+    }
+
     #[inline]
     pub const fn idx(&self) -> usize {
         self.idx as _
@@ -128,9 +133,9 @@ impl Pos {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(align(8))]
 pub struct Span {
-    pub start: u32,
-    pub end: u32,
-    pub buf: u32,
+    start: u32,
+    end: u32,
+    buf: u32,
 }
 
 impl Span {
@@ -149,13 +154,28 @@ impl Span {
     }
 
     #[inline]
+    pub const fn buf(&self) -> u32 {
+        self.buf
+    }
+
+    #[inline]
     pub const fn start_pos(&self) -> Pos {
         Pos::new(self.buf, self.start_idx())
     }
 
     #[inline]
+    pub const fn start_span(&self) -> Self {
+        self.start_pos().with_len(0)
+    }
+
+    #[inline]
     pub const fn end_pos(&self) -> Pos {
         Pos::new(self.buf, self.end_idx())
+    }
+
+    #[inline]
+    pub const fn end_span(&self) -> Self {
+        self.end_pos().with_len(0)
     }
 
     #[inline]

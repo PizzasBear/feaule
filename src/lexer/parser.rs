@@ -1,4 +1,4 @@
-use std::str;
+use std::{collections::HashSet, str, sync::Arc};
 
 use lazy_static::lazy_static;
 use num::{BigInt, BigUint, Zero};
@@ -24,51 +24,31 @@ pub const WHITESPACE_CHARS: &str = " \t\r";
 // pub const SPECIAL_CHARS: &str = r"#()[]{}\";
 pub const PUNCT_CHARS: &str = Punct::CHARS;
 
-fn unindent(out: &mut String, s: &str) {
-    let lines: SmallVec<[_; 32]> = s
-        .split('\n')
-        .map(|line| {
-            let trimmed = line.trim_start_matches(|ch| WHITESPACE_CHARS.contains(ch));
-            (
-                line.len() - trimmed.len(),
-                line.trim_end_matches(|ch| WHITESPACE_CHARS.contains(ch)),
-            )
-        })
-        .collect();
-
-    let Some(&(_, first_line)) = lines.first() else {
-        return;
-    };
-
-    let indent = lines[1..]
-        .iter()
-        .filter_map(|&(indent, line)| {
-            if indent < line.len() {
-                Some(indent)
-            } else {
-                None
-            }
+fn count_indent(s: &str) -> usize {
+    s.lines()
+        .skip(1)
+        .filter_map(|line| match line.trim_start_matches(&[' ', '\t']).len() {
+            len if len < line.len() => Some(line.len() - len),
+            _ => None,
         })
         .min()
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
 
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
+fn unindent(out: &mut String, s: &str) {
+    let indent = count_indent(s);
 
-    if !first_line.is_empty() {
-        out.push_str(first_line);
-    }
-
-    let mut push_newline = !first_line.is_empty();
-    for &(line_indent, line) in &lines[1..] {
-        if push_newline {
-            out.push('\n');
+    let ignore_first_line = s.starts_with('\n') || s.starts_with("\r\n");
+    for (i, line) in s.lines().enumerate() {
+        if i == 0 {
+            out.push_str(line);
         } else {
-            push_newline = true;
-        }
-        if line_indent < line.len() {
-            out.push_str(&line[indent..]);
+            if 1 < i || i == 1 && !ignore_first_line {
+                out.push('\n');
+            }
+            if indent < line.len() {
+                out.push_str(&line[indent..]);
+            }
         }
     }
 }
@@ -76,7 +56,7 @@ fn unindent(out: &mut String, s: &str) {
 pub fn lex_whitespace(
     code: &str,
     mut pos: Pos,
-    tokens: &mut Vec<Token>,
+    tokens: &mut Vec<TokenTree>,
     errors: &mut Vec<Error>,
     allow_outer_doc: bool,
     mut allow_inner_doc: bool,
@@ -90,9 +70,9 @@ pub fn lex_whitespace(
         for &ch in &code.as_bytes()[pos.idx()..] {
             if ch == b'\n' {
                 if newline.is_none() {
-                    newline = Some(Token {
+                    newline = Some(TokenTree {
                         span: pos.with_len(1),
-                        value: TokenValue::Newline(Newline),
+                        value: TokenTreeValue::Newline(Newline),
                     })
                 }
 
@@ -131,9 +111,9 @@ pub fn lex_whitespace(
         };
 
         if matches!(block_type, 0 | 1) && newline.is_none() {
-            newline = Some(Token {
+            newline = Some(TokenTree {
                 span: pos.with_len(0),
-                value: TokenValue::Newline(Newline),
+                value: TokenTreeValue::Newline(Newline),
             });
         }
 
@@ -191,9 +171,9 @@ pub fn lex_whitespace(
 
                 pos.advance_by(i);
                 if newline.is_none() {
-                    newline = Some(Token {
+                    newline = Some(TokenTree {
                         span: pos.with_len(1),
-                        value: TokenValue::Newline(Newline),
+                        value: TokenTreeValue::Newline(Newline),
                     })
                 }
                 pos.advance_by(1);
@@ -242,8 +222,8 @@ pub fn lex_whitespace(
     }
 
     if let Some((spans, inner_doc)) = inner_doc {
-        tokens.push(Token {
-            value: TokenValue::InnerDoc(inner_doc),
+        tokens.push(TokenTree {
+            value: TokenTreeValue::InnerDoc(inner_doc.into()),
             span: *spans.last().unwrap(),
         });
     } else if let Some(newline) = newline {
@@ -251,8 +231,8 @@ pub fn lex_whitespace(
     }
 
     if let Some((spans, outer_doc)) = outer_doc {
-        tokens.push(Token {
-            value: TokenValue::OuterDoc(outer_doc),
+        tokens.push(TokenTree {
+            value: TokenTreeValue::OuterDoc(outer_doc.into()),
             span: *spans.last().unwrap(),
         });
     }
@@ -337,7 +317,7 @@ pub fn parse_digits(
 pub fn lex_number(
     code: &str,
     mut pos: Pos,
-    tokens: &mut Vec<Token>,
+    tokens: &mut Vec<TokenTree>,
     errors: &mut Vec<Error>,
 ) -> Pos {
     let start_pos = pos;
@@ -491,8 +471,8 @@ pub fn lex_number(
                     .parse::<f64>()
                     .unwrap();
 
-                tokens.push(Token {
-                    value: TokenValue::Float(value, ty),
+                tokens.push(TokenTree {
+                    value: TokenTreeValue::Float(Float { value, ty }),
                     span: start_pos.to(pos).unwrap(),
                 });
             }
@@ -560,8 +540,8 @@ pub fn lex_number(
                     0.0
                 };
 
-                tokens.push(Token {
-                    value: TokenValue::Float(value, ty),
+                tokens.push(TokenTree {
+                    value: TokenTreeValue::Float(Float { value, ty }),
                     span: start_pos.to(pos).unwrap(),
                 });
             }
@@ -571,8 +551,8 @@ pub fn lex_number(
                     base: base as _,
                 });
 
-                tokens.push(Token {
-                    value: TokenValue::Float(1.0, ty),
+                tokens.push(TokenTree {
+                    value: TokenTreeValue::Float(Float { value: 1.0, ty }),
                     span: start_pos.to(pos).unwrap(),
                 });
             }
@@ -589,18 +569,20 @@ pub fn lex_number(
         };
 
         let span = start_pos.to(pos).unwrap();
-        tokens.push(Token {
-            value: TokenValue::Int {
-                value: whole_digits
-                    .iter()
-                    .try_fold(0u128, |v, &d| v.checked_mul(base as _)?.checked_add(d as _))
-                    .unwrap_or_else(|| {
-                        errors.push(Error::OverflowingNumberLiteral { span });
-                        0
-                    }),
-                is_pure,
+
+        let value = whole_digits
+            .iter()
+            .try_fold(0u128, |v, &d| v.checked_mul(base as _)?.checked_add(d as _))
+            .unwrap_or_else(|| {
+                errors.push(Error::OverflowingNumberLiteral { span });
+                0
+            });
+        tokens.push(TokenTree {
+            value: TokenTreeValue::Int(Int {
+                value,
+                is_pure: is_pure && value <= u32::MAX as _,
                 ty,
-            },
+            }),
             span,
         });
     }
@@ -740,7 +722,7 @@ pub fn parse_char_escape(code: &str, mut pos: Pos, errors: &mut Vec<Error>) -> (
 }
 
 /// Must start with the regex: `^'`
-pub fn lex_char(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut Vec<Error>) -> Pos {
+pub fn lex_char(code: &str, mut pos: Pos, tokens: &mut Vec<TokenTree>, errors: &mut Vec<Error>) -> Pos {
     let start_pos = pos;
     pos.advance_by(1);
 
@@ -752,21 +734,21 @@ pub fn lex_char(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut 
             errors.push(Error::EmptyCharLiteral {
                 span: start_pos.to(pos).unwrap(),
             });
-            tokens.push(Token {
-                value: TokenValue::Char('\0'),
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Char('\0'),
                 span: start_pos.to(pos).unwrap(),
             });
         }
         Some(ch) if code[pos.idx()..].starts_with('\'') => {
             pos.advance_by(1);
-            tokens.push(Token {
-                value: TokenValue::Char(ch),
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Char(ch),
                 span: start_pos.to(pos).unwrap(),
             });
         }
         Some(ch) => {
-            tokens.push(Token {
-                value: TokenValue::Char(ch),
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Char(ch),
                 span: start_pos.to(pos).unwrap(),
             });
             errors.push(Error::UnclosedCharLiteral {
@@ -774,8 +756,8 @@ pub fn lex_char(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut 
             });
         }
         None => {
-            tokens.push(Token {
-                value: TokenValue::Char('\0'),
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Char('\0'),
                 span: start_pos.to(pos).unwrap(),
             });
             errors.push(Error::UnclosedCharLiteral {
@@ -789,35 +771,21 @@ pub fn lex_char(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut 
 }
 
 /// Must start with the regex: `^(?:[\w&&\D]\w*)?"`
-pub fn lex_str(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut Vec<Error>) -> Pos {
+pub fn lex_str(
+    code: &str,
+    mut pos: Pos,
+    tokens: &mut Vec<TokenTree>,
+    errors: &mut Vec<Error>,
+    idents: &mut HashSet<Arc<str>>,
+) -> Pos {
     lazy_static! {
         static ref STR_START_DELIM: Regex = Regex::new(r#"^"+"#).unwrap();
-        static ref FORMAT_SPEC: Regex = Regex::new(
-            r#"(?x)
-                ^
-                (?:
-                    (?P<fill> \\\$ | \\\{ | \\\\ | [^\{\$\\] )? # }}
-                    (?P<align> [<\^=>])
-                )?
-                (?P<sign> [+-\ ])?
-                (?P<alt> #)?
-                (?P<width> [0-9]+)?
-                (?:
-                    g
-                    (?P<grouping> [\.,_\ ])
-                    (?P<group_freq>[1-9]+)?
-                )?
-                (?: . (?P<percision> [0-9]+) )?
-                (?P<type> [btqsodzZxXeEfF])?
-                (?P<debug> \?)?
-            "#
-        )
-        .unwrap();
-        static ref PROC_POS: Regex = Regex::new(r#"(?x) \{ | \\ | "+ "#).unwrap(); // }
+        static ref PROC_POS: Regex = Regex::new(r#"\{|\\|"+|\r?\n[ \t]*"#).unwrap(); // }
     }
 
     let start_pos = pos;
 
+    let mut crlf_flag_span = None;
     let mut raw_flag_span = None;
     let mut multiline_flag_span = None;
     let mut format_flag_span = None;
@@ -827,6 +795,7 @@ pub fn lex_str(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut V
             'r' => Some(&mut raw_flag_span),
             'm' => Some(&mut multiline_flag_span),
             'f' => Some(&mut format_flag_span),
+            'c' => Some(&mut crlf_flag_span),
 
             '"' => break,
             ch => {
@@ -857,109 +826,134 @@ pub fn lex_str(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut V
     pos.advance_by(delim_len);
 
     if delim_len == 2 {
-        tokens.push(Token {
+        tokens.push(TokenTree {
             value: match format_flag_span {
-                Some(_) => TokenValue::FStr(String::new(), vec![]),
-                None => TokenValue::Str(String::new()),
+                Some(_) => TokenTreeValue::FmtStr(FmtStr {
+                    value: "".into(),
+                    args: vec![],
+                }),
+                None => TokenTreeValue::Str("".into()),
             },
             span: start_pos.to(pos).unwrap(),
         });
-    } else {
-        let mut result = String::new();
-        let mut fmt_args = vec![];
-
-        if 2 < delim_len {
-            if code[pos.idx()..].starts_with(r#"\""#) {
-                pos.advance_by(2);
-                result.push('"');
-            } else if code[pos.idx()..].starts_with(r#"\\""#) {
-                pos.advance_by(2);
-                result.push('\\');
-            }
-        }
-
-        loop {
-            if let Some(mch) = PROC_POS.find(&code[pos.idx()..]) {
-                let s = &code[pos.idx()..pos.idx() + mch.start()];
-                pos.advance_by(mch.start());
-                result.push_str(s);
-
-                let seg_start_pos = pos;
-
-                match mch.as_str() {
-                    "{" => {
-                        // }
-                        pos.advance_by(1);
-                        if format_flag_span.is_some() {
-                            if code[pos.idx()..].starts_with("{" /* } */) {
-                                pos.advance_by(1);
-                                result.push('{'); // }
-                            } else {
-                                let mut tk_tokens = vec![];
-                                pos = lex_group(
-                                    code,
-                                    pos,
-                                    &mut tk_tokens,
-                                    errors,
-                                    Delim::Brace,
-                                    pos.with_backwards_len(1),
-                                );
-                                fmt_args.push((
-                                    result.len(),
-                                    Token {
-                                        value: TokenValue::Group(Delim::Brace, tk_tokens),
-                                        span: seg_start_pos.to(pos).unwrap(),
-                                    },
-                                ));
-                            }
-                        } else {
-                            result.push('{'); // }
-                        }
-                    }
-                    "\\" => {
-                        if raw_flag_span.is_some() {
-                            pos.advance_by(1);
-                            result.push('\\');
-                        } else {
-                            let ch;
-                            (pos, ch) = parse_char_escape(code, pos, errors);
-                            result.push(ch.unwrap());
-                        }
-                    }
-                    closer => {
-                        pos.advance_by(closer.len());
-                        if closer.len() < delim_len {
-                            result.push_str(closer);
-                        } else {
-                            result.push_str(&closer[delim_len..]);
-                            break;
-                        }
-                    }
-                }
-            } else {
-                pos.go_to(code.len());
-                // Unclosed string
-                errors.push(Error::UnclosedStr {
-                    span: start_pos.to(pos).unwrap(),
-                });
-                break;
-            }
-        }
-
-        tokens.push(Token {
-            value: match (format_flag_span, multiline_flag_span) {
-                (Some(_), Some(_)) => todo!(),
-                (Some(_), None) => TokenValue::FStr(result, fmt_args),
-                (None, Some(_)) => {
-                    let mut out = String::new();
-                    unindent(&mut out, &result);
-                    TokenValue::Str(out)
-                }
-                (None, None) => TokenValue::Str(result),
-            },
-            span: start_pos.to(pos).unwrap(),
-        });
+        return pos;
     }
+
+    let mut lit = String::new();
+    let mut fmt_args = vec![];
+
+    if 2 < delim_len {
+        if code[pos.idx()..].starts_with(r#"\""#) {
+            pos.advance_by(2);
+            lit.push('"');
+        } else if code[pos.idx()..].starts_with(r"\\") {
+            pos.advance_by(2);
+            lit.push('\\');
+        } else if raw_flag_span.is_some() && code[pos.idx()..].starts_with('\\') {
+            errors.push(Error::UnknownCharEscape {
+                escape: code[pos.idx()..].chars().nth(1).unwrap_or('\0'),
+                span: pos.with_len(2),
+            });
+            pos.advance_by(1);
+            lit.push('\\');
+        }
+    }
+
+    let mut dedent_width = None;
+    loop {
+        if let Some(mch) = PROC_POS.find(&code[pos.idx()..]) {
+            let s = &code[pos.idx()..pos.idx() + mch.start()];
+            pos.advance_by(mch.start());
+            lit.push_str(s);
+
+            let seg_start_pos = pos;
+
+            match mch.as_str() {
+                "{" => {
+                    // }
+                    pos.advance_by(1);
+                    if format_flag_span.is_some() {
+                        if code[pos.idx()..].starts_with('{' /* } */) {
+                            pos.advance_by(1);
+                            lit.push('{'); // }
+                        } else {
+                            let mut tk_tokens = vec![];
+                            pos = lex_group(
+                                code,
+                                pos,
+                                &mut tk_tokens,
+                                errors,
+                                Delim::Brace,
+                                pos.with_backwards_len(1),
+                                idents,
+                            );
+                            fmt_args.push(FmtStrArg {
+                                index: lit.len(),
+                                span: seg_start_pos.to(pos).unwrap(),
+                                tokens: tk_tokens,
+                            });
+                        }
+                    } else {
+                        lit.push('{'); // }
+                    }
+                }
+                "\\" => {
+                    if raw_flag_span.is_some() {
+                        pos.advance_by(1);
+                        lit.push('\\');
+                    } else {
+                        let ch;
+                        (pos, ch) = parse_char_escape(code, pos, errors);
+                        lit.push(ch.unwrap());
+                    }
+                }
+                closer if closer.starts_with('"') => {
+                    pos.advance_by(closer.len());
+                    if closer.len() < delim_len {
+                        lit.push_str(closer);
+                    } else {
+                        lit.push_str(&closer[delim_len..]);
+                        break;
+                    }
+                }
+                indent => {
+                    pos.advance_by(indent.len());
+                    let crlf = indent.starts_with('\r');
+                    if dedent_width.is_some() || !lit.is_empty() {
+                        if crlf_flag_span.is_some() {
+                            lit.push('\r');
+                        }
+                        lit.push('\n');
+                    }
+                    let dedent_width =
+                        *dedent_width.get_or_insert_with(|| indent.len() - crlf as usize);
+                    if multiline_flag_span.is_some() {
+                        lit.push_str(&indent[indent.len().min(crlf as usize + dedent_width)..]);
+                    } else {
+                        lit.push_str(&indent[crlf as usize + 1..]);
+                    }
+                }
+            }
+        } else {
+            pos.go_to(code.len());
+            // Unclosed string
+            errors.push(Error::UnclosedStr {
+                span: start_pos.to(pos).unwrap(),
+            });
+            break;
+        }
+    }
+
+    tokens.push(TokenTree {
+        value: match format_flag_span {
+            Some(_) => TokenTreeValue::FmtStr(FmtStr {
+                value: lit.into(),
+                args: fmt_args,
+            }),
+            None => TokenTreeValue::Str(lit.into()),
+        },
+        span: start_pos.to(pos).unwrap(),
+    });
 
     pos
 }
@@ -967,10 +961,11 @@ pub fn lex_str(code: &str, mut pos: Pos, tokens: &mut Vec<Token>, errors: &mut V
 pub fn lex_group(
     code: &str,
     mut pos: Pos,
-    tokens: &mut Vec<Token>,
+    tokens: &mut Vec<TokenTree>,
     errors: &mut Vec<Error>,
     opening_delim: Delim,
     opening_delim_span: Span,
+    idents: &mut HashSet<Arc<str>>,
 ) -> Pos {
     while pos.idx() < code.len() {
         pos = lex_whitespace(code, pos, tokens, errors, true, true);
@@ -1022,9 +1017,10 @@ pub fn lex_group(
                         errors,
                         tk_delim,
                         pos.with_backwards_len(1),
+                        idents,
                     );
-                    tokens.push(Token {
-                        value: TokenValue::Group(tk_delim, tk_tokens),
+                    tokens.push(TokenTree {
+                        value: TokenTreeValue::Group(tk_delim, tk_tokens),
                         span: start_pos.to(pos).unwrap(),
                     });
                 }
@@ -1043,22 +1039,33 @@ pub fn lex_group(
                 _ => unreachable!(),
             }
         } else if ty.name("str").is_some() {
-            pos = lex_str(code, pos, tokens, errors);
+            pos = lex_str(code, pos, tokens, errors, idents);
         } else if ty.name("char").is_some() || ty.name("char_w").is_some() {
             pos = lex_char(code, pos, tokens, errors);
         } else if let Some(mch) = ty.name("label") {
-            tokens.push(Token {
-                value: TokenValue::Label(mch.as_str().trim_start_matches('\'').to_owned()),
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Label(mch.as_str().trim_start_matches('\'').into()),
                 span: pos.with_len(mch.len()),
             });
 
             pos.advance_by(mch.len());
         } else if let Some(mch) = ty.name("ident") {
             let s = mch.as_str();
-            tokens.push(Token {
-                value: TokenValue::Ident {
+
+            let ident = s.trim_start_matches("r'");
+            let ident = match idents.get(ident) {
+                Some(ident) => ident.clone(),
+                None => {
+                    let ident: Arc<str> = ident.into();
+                    idents.insert(ident.clone());
+                    ident
+                }
+            };
+
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Ident {
                     raw: s.starts_with("r'"),
-                    ident: s.trim_start_matches("r'").to_owned(),
+                    ident,
                 },
                 span: pos.with_len(mch.len()),
             });
@@ -1066,15 +1073,15 @@ pub fn lex_group(
             pos.advance_by(mch.len());
         } else if let Some(mch) = ty.name("punct") {
             for &ch in mch.as_str().as_bytes() {
-                tokens.push(Token {
-                    value: TokenValue::Punct(Punct::from_ascii(ch).unwrap()),
+                tokens.push(TokenTree {
+                    value: TokenTreeValue::Punct(Punct::from_ascii(ch).unwrap()),
                     span: pos.with_len(1),
                 });
 
                 pos.advance_by(1);
             }
-            tokens.push(Token {
-                value: TokenValue::Punct(Punct::End),
+            tokens.push(TokenTree {
+                value: TokenTreeValue::Punct(Punct::End),
                 span: pos.with_len(0),
             });
         } else if let Some(mch) = ty.name("any") {
@@ -1101,7 +1108,7 @@ pub fn lex_group(
     pos
 }
 
-pub fn lex(buf: u32, code: &str) -> (Vec<Token>, Vec<Error>) {
+pub fn lex(buf: u32, code: &str, idents: &mut HashSet<Arc<str>>) -> (Vec<TokenTree>, Vec<Error>) {
     let mut pos = Pos::zero(buf);
     let mut errors = vec![];
     let mut tokens = vec![];
@@ -1114,6 +1121,7 @@ pub fn lex(buf: u32, code: &str) -> (Vec<Token>, Vec<Error>) {
             &mut errors,
             Delim::None,
             pos.with_len(0),
+            idents,
         );
     }
 

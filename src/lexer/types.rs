@@ -1,21 +1,22 @@
-use std::{fmt, num::NonZeroU8, str};
+use std::{fmt, num::NonZeroU8, str, sync::Arc};
 
 use crate::code::Span;
 
 macro_rules! def_punct {
-    ($($name:ident $lit:literal),+ $(,)?) => {
+    ($dollar:tt $($(#[$attr:meta])* $name:ident[$punct:tt] = $lit:literal),+ $(,)?) => {
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[non_exhaustive]
         #[repr(u8)]
         pub enum Punct {
             End = 0,
             $(
+                $(#[$attr])*
                 $name = $lit,
             )+
         }
 
         impl Punct {
-            pub const CHARS: &str =
+            pub const CHARS: &'static str =
                 match ::std::str::from_utf8(&[$($lit),+]) {
                     Ok(s) => {
                         let mut i = 0;
@@ -35,22 +36,70 @@ macro_rules! def_punct {
                 }
             }
         }
+
+        #[macro_export]
+        macro_rules! punct {
+            [End] => { $crate::lexer::Punct::End };
+            $([$punct] => { $crate::lexer::Punct::$name };)+
+            [$dollar($dollar tt:tt),+ $dollar (,)?] => { [$dollar($crate::lexer::punct! $dollar tt),+] }
+        }
+        pub use punct;
     };
 }
 
-def_punct!(
-    Plus b'+', Minus b'-', Ast b'*', Sol b'/', Percnt b'%', Excl b'!', Amp b'&',
-    Verbar b'|', Circ b'^', Tilde b'~', Dollar b'$', Commat b'@', Lt b'<', Gt b'>',
-    Equals b'=', Period b'.', Comma b',', Colon b':', Semi b';', Quest b'?',
-    Grave b'`', Bsol b'\\',
-);
+def_punct! { $
+    /// Plus Sign `+`
+    Plus[+] = b'+',
+    /// Minus Sign `-`
+    Minus[-] = b'-',
+    /// Asterisk `*`
+    Ast[*] = b'*',
+    /// Solidus `/`
+    Sol[/] = b'/',
+    /// Percent Sign `%`
+    Percnt[%] = b'%',
+    /// Exclamation Mark `!`
+    Excl[!] = b'!',
+    /// Ampersand `&`
+    Amp[&] = b'&',
+    /// Vertical Line `|`
+    Verbar[|] = b'|',
+    /// Circumflex Accent `^`
+    Hat[^] = b'^',
+    /// Tilde Symbol `~`
+    Tilde[~] = b'~',
+    /// Dollar Sign `$`
+    Dollar[$] = b'$',
+    /// Commercial At Symbol `@`
+    Commat[@] = b'@',
+    /// Less Than Sign `<`
+    Lt[<] = b'<',
+    /// Greater Than Sign `>`
+    Gt[>] = b'>',
+    /// Equals Sign `=`
+    Equals[=] = b'=',
+    /// Full Stop `.`
+    Period[.] = b'.',
+    /// Comma `,`
+    Comma[,] = b',',
+    /// Colon `:`
+    Colon[:] = b':',
+    /// Semicolon `;`
+    Semi[;] = b';',
+    /// Question Mark `?`
+    Quest[?] = b'?',
+    /// Grave Accent ```
+    Grave[Grave] = b'`',
+    /// Reverse Solidus `\`
+    Bsol[Bsol] = b'\\',
+}
 
 impl fmt::Debug for Punct {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_end() {
-            write!(f, "Punct::End")
+            write!(f, "punct![End]")
         } else {
-            write!(f, "Punct({:?})", char::from_u32(*self as _).unwrap())
+            write!(f, "punct![{}]", char::from_u32(*self as _).unwrap())
         }
     }
 }
@@ -75,7 +124,7 @@ impl Punct {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Newline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,11 +144,25 @@ pub enum IntType {
     I8,
 }
 
+impl Default for IntType {
+    #[inline]
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FloatType {
     Auto,
     F64,
     F32,
+}
+
+impl Default for FloatType {
+    #[inline]
+    fn default() -> Self {
+        Self::Auto
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -125,50 +188,104 @@ impl fmt::Debug for Delim {
     }
 }
 
-pub enum TokenValue {
-    Float(f64, FloatType),
-    Int {
-        value: u128,
-        is_pure: bool,
-        ty: IntType,
-    },
-    // BigInt(BigUint),
-    Str(String),
-    FStr(String, Vec<(usize, Token)>),
-    Char(char),
-    Label(String),
-    Ident {
-        raw: bool,
-        ident: String,
-    },
-    Punct(Punct),
-    Newline(Newline),
-    InnerDoc(String),
-    OuterDoc(String),
-    Group(Delim, Vec<Token>),
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Int {
+    pub value: u128,
+    pub is_pure: bool,
+    pub ty: IntType,
 }
 
-impl fmt::Debug for TokenValue {
+impl Default for Int {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            value: 0,
+            is_pure: true,
+            ty: IntType::Auto,
+        }
+    }
+}
+
+impl fmt::Debug for Int {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const MAX_PURE: u128 = u32::MAX as _;
         match self {
-            Self::Float(x, ty) => write!(f, "Float({x:?}, {ty:?})"),
-            Self::Int {
-                value,
+            Self {
+                value: value @ 0..=MAX_PURE,
                 is_pure: true,
                 ty: IntType::Auto,
             } => write!(f, "PureInt({value:?})",),
-            Self::Int {
+            Self {
                 value,
                 is_pure: true,
                 ty,
             } => write!(f, "FakePureInt({value:?}, {ty:?})",),
-            Self::Int {
+            Self {
                 value,
                 is_pure: false,
                 ty,
             } => write!(f, "ImpureInt({value:?}, {ty:?})",),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Default)]
+pub struct Float {
+    pub value: f64,
+    pub ty: FloatType,
+}
+
+impl fmt::Debug for Float {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self { value, ty } = self;
+        write!(f, "Float({value:?}, {ty:?})")
+    }
+}
+
+pub struct FmtStrArg {
+    pub index: usize,
+    pub span: Span,
+    pub tokens: Vec<TokenTree>,
+}
+
+impl fmt::Debug for FmtStrArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fmt_arg![at {} containing ", self.index)?;
+        fmt::Debug::fmt(self.tokens.as_slice(), f)?;
+        write!(f, " @ {:?}]", self.span)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct FmtStr {
+    pub value: Arc<str>,
+    pub args: Vec<FmtStrArg>,
+}
+
+pub enum TokenTreeValue {
+    Float(Float),
+    Int(Int),
+    // BigInt(BigUint),
+    Str(Arc<str>),
+    FmtStr(FmtStr),
+    Char(char),
+    Label(Arc<str>),
+    Ident { raw: bool, ident: Arc<str> },
+    Punct(Punct),
+    Newline(Newline),
+    InnerDoc(Arc<str>),
+    OuterDoc(Arc<str>),
+    Group(Delim, Vec<TokenTree>),
+}
+
+impl fmt::Debug for TokenTreeValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(int) => write!(f, "{int:?}"),
+            Self::Float(float) => write!(f, "{float:?}"),
             Self::Str(s) => write!(f, "Str({s:?})"),
-            Self::FStr(s, tokens) => f.debug_tuple("FStr").field(s).field(tokens).finish(),
+            Self::FmtStr(fmt_s) => write!(f, "{fmt_s:?}"),
             Self::Char(ch) => write!(f, "Char({ch:?})"),
             Self::Label(s) => write!(f, "Label({s:?})"),
             &Self::Ident { raw, ref ident } => {
@@ -188,15 +305,16 @@ impl fmt::Debug for TokenValue {
     }
 }
 
-pub struct Token {
-    pub value: TokenValue,
+pub struct TokenTree {
+    pub value: TokenTreeValue,
     pub span: Span,
 }
 
-impl fmt::Debug for Token {
+impl fmt::Debug for TokenTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "token![")?;
         fmt::Debug::fmt(&self.value, f)?;
-        write!(f, " @ {:?}]", self.span)
+        write!(f, " @ {:?}]", self.span)?;
+        Ok(())
     }
 }
