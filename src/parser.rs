@@ -5,12 +5,14 @@ use thiserror::Error;
 
 use crate::{
     code::Span,
-    lexer::{self, Delim, Punct, TokenTree, TokenTreeValue},
+    lexer::{self, Delim},
 };
 
 pub mod buf;
 
 use buf::{keyword_token, punct_token};
+
+use self::buf::{IdentToken, ParenToken, Parse, ParseBuffer, PureIntToken, Spanned, Token};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -63,6 +65,47 @@ pub enum Error {
     Expected(Vec<Expected>),
 }
 
+#[derive(Debug, Clone)]
+pub enum Member {
+    Named(IdentToken),
+    Unnamed(PureIntToken),
+}
+
+impl Spanned for Member {
+    fn span(&self) -> Span {
+        match self {
+            Self::Named(tk) => tk.span(),
+            Self::Unnamed(tk) => tk.span(),
+        }
+    }
+}
+
+impl Parse<'_> for Member {
+    fn parse(input: &mut ParseBuffer<'_>) -> Self {
+        let mut lookahead1 = input.lookahead1();
+        if lookahead1.peek::<IdentToken>() {
+            Self::Named(input.parse())
+        } else if lookahead1.peek::<PureIntToken>() {
+            Self::Unnamed(input.parse())
+        } else {
+            lookahead1.error();
+            Self::Named(IdentToken {
+                raw: false,
+                name: "".into(),
+                span: input.start_span(),
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PrefixOp {
+    TakeRef(punct_token![&], Option<keyword_token![mut]>),
+    Deref(punct_token![*]),
+    Not(punct_token![!]),
+    Neg(punct_token![-]),
+}
+
 #[derive(Debug)]
 pub enum ExprValue {
     Int(u128, lexer::IntType),
@@ -71,7 +114,8 @@ pub enum ExprValue {
     Str(Arc<str>),
     FStr(Arc<str>, Vec<(usize, Expr)>),
     Tuple(Vec<Expr>),
-    FieldAccess(Box<Expr>, Arc<str>),
+    MemberAccess(Box<Expr>, punct_token![.], Member),
+    PrefixOp(PrefixOp, Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -80,144 +124,74 @@ pub struct Expr {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum PrefixOp {
-    Deref(punct_token![*]),
-    TakeRef(punct_token![&]),
-    TakeMut(punct_token![&], keyword_token![mut]),
-    Not(punct_token![!]),
-    Neg(punct_token![-]),
-    Pos(punct_token![+]),
-}
+impl Expr {
+    fn parse_ambiguous(input: &mut ParseBuffer) -> Self {
+        todo!()
+    }
 
-macro_rules! tkpat {
-    (@value Float $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Float(lexer::Float $tt) $(| tkpat!(@value $($or)+))? };
-    (@value Int $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Int(lexer::Int $tt) $(| tkpat!(@value $($or)+))? };
-    (@value Str $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Str $tt $(| tkpat!(@value $($or)+))? };
-    (@value FStr $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::FmtStr(lexer::FmtStr $tt) $(| tkpat!(@value $($or)+))? };
-    (@value Char $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Char $tt $(| tkpat!(@value $($or)+))? };
-    (@value Label $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Label $tt $(| tkpat!(@value $($or)+))? };
-    (@value Ident $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Ident $tt $(| tkpat!(@value $($or)+))? };
-    (@value Punct::$punct:ident $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Punct(Punct::$punct) $(| tkpat!(@value $($or)+))? };
-    (@value Punct $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Punct $tt $(| tkpat!(@value $($or)+))? };
-    (@value Newline $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Newline $tt $(| tkpat!(@value $($or)+))? };
-    (@value InnerDoc $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::InnerDoc $tt $(| tkpat!(@value $($or)+))? };
-    (@value OuterDoc $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::OuterDoc $tt $(| tkpat!(@value $($or)+))? };
-    (@value Group $tt:tt $(| $($or:tt)+)? $(,)?) => { TokenTreeValue::Group $tt $(| tkpat!(@value $($or)+))? };
-    (@value $pat:pat_param $(| $($or:tt)+)? $(,)?) => { $pat $(| tkpat!(@value $($or)+))? };
-    ($span:pat, $($value:tt)+) => {
-        TokenTree {
-            value: tkpat!(@value $($value)+),
-            span: $span,
-        }
-    };
-    ($span:pat $(,)?) => {
-        TokenTree {
-            span: $span,
-            ..
-        }
-    };
-}
+    fn parse_subexpr(input: &mut ParseBuffer) -> Self {
+        todo!();
+    }
 
-macro_rules! tkpats {
-    () => { [] };
-    (@part $pat:pat) => { $pat };
-    (@part {$($tt:tt)*}) => { tkpat!($($tt)*) };
-    ($($($part:tt)|+),+ $(,)?) => { [$($(tkpats!(@part $part))|+),+] }
-}
+    fn parse_unary_expr(input: &mut ParseBuffer) -> Self {
+        let start = input.start_span();
+        let op = if let Some(tk) = input.parse() {
+            Some(PrefixOp::TakeRef(tk, input.parse()))
+        } else if let Some(tk) = input.parse() {
+            Some(PrefixOp::Deref(tk))
+        } else if let Some(tk) = input.parse() {
+            Some(PrefixOp::Neg(tk))
+        } else if let Some(tk) = input.parse() {
+            Some(PrefixOp::Not(tk))
+        } else {
+            None
+        };
 
-pub fn parse_value(tokens: &[TokenTree], mut pos: usize, errors: &mut Vec<Error>) -> (usize, Expr) {
-    let mut prefix_ops = vec![];
-    while let Some(tk) = tokens.get(pos) {
-        match tk.value {
-            TokenTreeValue::Punct(punct) => {
-                let op = match punct {
-                    Punct::Ast => PrefixOp::Deref,
-                    Punct::Amp => match tokens.get(pos + 1) {
-                        Some(TokenTree {
-                            value: TokenTreeValue::Ident { raw: false, ident },
-                            ..
-                        }) if &**ident == Keyword::Mut.as_str() => {
-                            pos += 1;
-                            PrefixOp::TakeMut
-                        }
-                        _ => PrefixOp::TakeRef,
-                    },
-                    Punct::Minus => PrefixOp::Neg,
-                    Punct::Plus => PrefixOp::Pos,
-                    Punct::Excl => PrefixOp::Not,
-                    _ => break,
-                };
-                prefix_ops.push((tk.span, op));
-                pos += 1;
+        match op {
+            Some(op) => {
+                let value = Self::parse_unary_expr(input);
+                Self {
+                    span: start.merged_with(&value.span).unwrap(),
+                    value: ExprValue::PrefixOp(op, Box::new(value)),
+                }
             }
-            _ => break,
+            None => todo!(),
         }
     }
 
-    let mut value = match tokens.get(pos) {
-        Some(&tkpat!(span, Int { value, ty, .. })) => Expr {
-            value: ExprValue::Int(value, ty),
-            span,
-        },
-        Some(&tkpat!(span, Float { value, ty })) => Expr {
-            value: ExprValue::Float(value, ty),
-            span,
-        },
-        Some(&tkpat!(span, Char(ch))) => Expr {
-            value: ExprValue::Char(ch),
-            span,
-        },
-        Some(&tkpat!(span, Str(ref s))) => Expr {
-            value: ExprValue::Str(s.clone()),
-            span,
-        },
-        Some(&tkpat!(span, FStr { ref value, ref args })) => Expr {
-            value: ExprValue::FStr(
-                value.clone(),
-                args.iter()
-                    .map(|lexer::FmtStrArg { index, tokens, .. }| {
-                        (*index, parse_expr(tokens, 0, errors).1)
-                    })
-                    .collect(),
-            ),
-            span,
-        },
-        tk => {
-            let span = match tk {
-                None => tokens.last().unwrap().span.end_span(),
-                Some(tk) => tk.span,
-            };
-            errors.push(Error::UnexpectedToken { span });
-            Expr {
-                value: ExprValue::Tuple(vec![]),
-                span: span.start_span(),
+    fn parse_trailer_expr(input: &mut ParseBuffer) -> Self {
+        let mut expr = Self::parse_atom_expr(input);
+        loop {
+            if ParenToken::peek(input) {
+                // TODO: impl fn call
+                todo!();
+            } else if <punct_token![.]>::peek(input) && !<punct_token![..]>::peek(input) {
+                let mut dot: punct_token![.] = input.parse();
+                let member: Member = input.parse();
+                if ParenToken::peek(input) {
+                    // TODO: impl method call
+                    todo!();
+                } else {
+                    expr = Self {
+                        span: expr.span.merged_with(&member.span()).unwrap(),
+                        value: ExprValue::MemberAccess(Box::new(expr), dot, member),
+                    };
+                    continue;
+                }
+            } else {
+                // TODO: impl rest
+                todo!();
             }
-        }
-    };
-
-    loop {
-        match tokens[pos..] {
-            tkpats![{_, Punct::Period}, {span, Ident { raw: _, ref ident }}, ..] => {
-                pos += 2;
-                value = Expr {
-                    span: value.span.merged_with(&span).unwrap(),
-                    value: ExprValue::FieldAccess(Box::new(value), ident.clone()),
-                };
-            }
-            _ => break,
         }
     }
 
-    _ = pos;
-
-    todo!()
+    fn parse_atom_expr(input: &mut ParseBuffer) -> Self {
+        todo!();
+    }
 }
 
-pub fn parse_expr(_tokens: &[TokenTree], _pos: usize, _errors: &mut Vec<Error>) -> (usize, Expr) {
-    todo!();
-}
-
-pub fn parse_file(_tokens: &[TokenTree]) -> () {
-    todo!()
+impl Parse<'_> for Expr {
+    fn parse(input: &mut ParseBuffer) -> Self {
+        todo!();
+    }
 }
